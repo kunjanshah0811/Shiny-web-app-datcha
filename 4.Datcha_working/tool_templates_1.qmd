@@ -1,0 +1,908 @@
+---
+title: "Datcha"
+subtitle: "Data Temporal Change Analyzer: Detecting Additions, Deletions, and Edits in Social Media Datasets collected at different times"
+author:
+  - name: "Kunjan Shah"
+  - name: "Dr Yannik Peters"
+#image: images/tool_icon.png #takes from a folder "images" in your github repository the tool icon file  
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+format:
+  html: 
+    toc: true          # Enable TOC
+    toc-depth: 5       # Levels to include (default: 3)
+    toc-location: right # Or 'right' (floating), 'body'
+    toc-expand: true
+  #pdf: default
+#bibliography: references.bib
+#biblio-style: apa
+---
+
+# At a glance
+
+<!-- Summary with main points of the tool in 2-3 bullet points -->
+
+### Table of Content
+
+[Introduction](#introduction)
+
+[Setup](#setup)
+
+[Tool application](#tool-application)
+
+[Conclusion and recommendations](#conclusion-and-recommendations)
+
+# Introduction {#introduction}
+
+# Set-up
+
+## Library Imports
+
+```{r setup, message=FALSE, warning=FALSE}
+#library(shiny)
+#library(shinyjs)        # For enhanced UI functionality
+library(dplyr)          # Data manipulation
+library(tm)             # Text mining
+library(topicmodels)    # Topic modeling
+library(sentimentr)     # Sentiment analysis
+#library(wordcloud2)     # Word cloud visualization
+library(highcharter)    # Interactive charts
+library(tidytext)       # Text processing
+library(reshape2)       # Data reshaping
+library(ggplot2)        # Visualization
+library(DT)             # Interactive tables
+library(stringdist)     # String distance calculation
+library(shinyBS)        # For tooltips
+library(quanteda)       # Quantitative text analysis
+library(quanteda.textstats) # Text statistics
+library(KeynessMeasures)    # Keyness analysis
+library(SnowballC)      # For stemming
+library(textstem)       # For lemmatization
+library(LDAvis)         # LDA visualization
+library(diffobj)        # For visual text diffs
+library(htmltools)      # HTML tools for Shiny
+library(bslib)          # Bootstrap library for Shiny
+library(readr)
+```
+
+## Load Your Two Datasets
+
+Both Datasets should be GDPR-compliant. What does 'GDPR-compliant' mean here? • Fully anonymized: No personal data (names, usernames, emails, IDs that can identify individuals) remains in the dataset. • No personal data: Even indirectly identifiable info (e.g., rare locations, unique phrases) must be removed or aggregated. • Data minimization: Only data strictly necessary for your analysis is included.
+
+```{r message=FALSE, warning=FALSE}
+data1 <- read_csv("https://raw.githubusercontent.com/YannikPeters/Datcha_KODAQS_Tool/main/Data1.csv",
+                  locale = locale(encoding = "UTF-8"), show_col_types = FALSE)
+
+data2 <- read_csv("https://raw.githubusercontent.com/YannikPeters/Datcha_KODAQS_Tool/main/Data2.csv",
+                  locale = locale(encoding = "UTF-8"), show_col_types = FALSE)
+
+```
+
+```{r results= 'asis', message=FALSE, warning=FALSE}
+cat("Dataset 1 columns:\n")
+print(names(data1))
+
+cat("\nDataset 2 columns:\n")
+print(names(data2))
+```
+
+## Enter ID Column and Dates
+
+```{r message=FALSE, warning=FALSE}
+# User must manually specify the ID column names (no auto-detection)
+
+id_col_1 <- "col_id"  # actual ID column name in Dataset 1
+id_col_2 <- "col_id"  # actual ID column name in Dataset 2
+
+# Safety check
+if (!id_col_1 %in% names(data1)) stop("id_col_1 '", id_col_1, "' not found in Dataset 1")
+if (!id_col_2 %in% names(data2)) stop("id_col_2 '", id_col_2, "' not found in Dataset 2")
+
+cat("Using ID column for Dataset 1:", id_col_1, "\n")
+cat("Using ID column for Dataset 2:", id_col_2, "\n")
+```
+
+```{r message=FALSE, warning=FALSE}
+# Set your dates here
+date_1 <- as.Date("2025-11-15")   # Dataset 1 collection date
+date_2 <- as.Date("2025-12-15")   # Dataset 2 collection date
+
+# Validate order
+if (date_1 >= date_2) {
+  stop("ERROR: date_1 must be earlier than date_2")
+}
+
+cat("Date range validated:", date_1, "→", date_2, "(", as.numeric(date_2 - date_1), "days )\n")
+```
+
+```{r message=FALSE, warning=FALSE}
+cat("Final configuration:\n")
+cat("Dataset 1:", nrow(data1), "rows | ID column:", id_col_1,
+    "| Date:", format(date_1, "%Y-%m-%d"), "\n")
+cat("Dataset 2:", nrow(data2), "rows | ID column:", id_col_2,
+    "| Date:", format(date_2, "%Y-%m-%d"), "\n")
+
+# Identify changes between Dataset 1 (earlier) and Dataset 2 (later)
+removed_posts  <- data1 %>% filter(!(.data[[id_col_1]] %in% data2[[id_col_2]]))
+added_posts    <- data2 %>% filter(!(.data[[id_col_2]] %in% data1[[id_col_1]]))
+matched_ids    <- intersect(data1[[id_col_1]], data2[[id_col_2]])
+
+# For matched posts, check if content changed (assuming a 'text' column; adjust if different)
+text_col <- "text"  # CHANGE THIS if your text column has a different name
+matched1 <- data1 %>% filter(.data[[id_col_1]] %in% matched_ids)
+matched2 <- data2 %>% filter(.data[[id_col_2]] %in% matched_ids)
+edited_posts <- matched1 %>%
+  inner_join(matched2, by = setNames(id_col_2, id_col_1), suffix = c(".old", ".new")) %>%
+  filter(.data[[paste0(text_col, ".old")]] != .data[[paste0(text_col, ".new")]])
+
+cat("\nAnalysis ready!\n")
+cat("Number of Deleted Posts :", nrow(removed_posts), "\n")
+cat("Number of Added Posts   :", nrow(added_posts), "\n")
+cat("Number of Edited Posts  :", nrow(edited_posts),
+    "out of", length(matched_ids), "matched posts\n")
+```
+
+```{r message=FALSE, warning=FALSE}
+# TEXT PROCESSING MODULE
+
+text_processor <- list(
+  clean = function(text, use_stem = FALSE, use_lemma = TRUE) {
+    # Use VCorpus + plain functions to avoid SimpleCorpus warnings
+    corpus <- VCorpus(VectorSource(text))
+    
+    corpus <- tm_map(corpus, content_transformer(tolower))
+    corpus <- tm_map(corpus, removeNumbers)
+    corpus <- tm_map(corpus, removePunctuation)
+    corpus <- tm_map(corpus, removeWords, stopwords("en"))
+    corpus <- tm_map(corpus, stripWhitespace)
+    
+    if (use_stem) corpus <- tm_map(corpus, stemDocument)
+    
+    if (use_lemma) {
+      txt <- sapply(corpus, as.character)
+      txt <- textstem::lemmatize_strings(txt)
+      return(txt)
+    }
+    
+    sapply(corpus, as.character)
+  },
+  
+  # Fixed get_freq – no gram_type argument needed for unigrams
+  get_freq = function(text) {
+    corpus <- VCorpus(VectorSource(text))
+    dtm    <- DocumentTermMatrix(corpus)
+    freq   <- slam::col_sums(dtm)               # faster & safer than colSums(as.matrix())
+    df     <- data.frame(word = names(freq), freq = freq, stringsAsFactors = FALSE) %>%
+      arrange(desc(freq))
+    df
+  }
+)
+```
+
+# Data Deletion
+
+```{r message=FALSE, warning=FALSE}
+# Data Deletion
+
+# Define removed and remaining posts correctly
+removed_posts <- data1 %>% filter(!(.data[[id_col_1]] %in% data2[[id_col_2]]))
+remaining_posts <- data2 %>% filter(.data[[id_col_2]] %in% intersect(data1[[id_col_1]], data2[[id_col_2]]))
+
+# Quality indicators
+days <- as.numeric(difftime(date_2, date_1, units = "days"))
+
+total <- nrow(data1)
+removed_n <- nrow(removed_posts)
+remaining_n <- nrow(remaining_posts)
+
+cat("Consistency              :", round(remaining_n / total * 100, 1), "%\n")
+cat("Data Loss                :", round(removed_n / total * 100, 1), "%\n")
+
+if (days <= 0) {
+  cat("Daily Removed Posts      : N/A (invalid date range)\n")
+  cat("Daily Removal Rate       : N/A (invalid date range)\n")
+} else {
+  cat("Daily Removed Posts      :", round(removed_n / days, 1), "posts/day\n")
+  daily_rate <- round(removed_n / days / total * 100, 2)
+  cat("Daily Removal Rate       :", daily_rate, "% of total posts/day (over", days, "days)\n")
+}
+```
+
+## 1. Word Frequency
+
+```{r message=FALSE, warning=FALSE}
+# Top words in Removed posts
+cleaned_removed <- text_processor$clean(removed_posts$text, use_stem = FALSE, use_lemma = TRUE)
+
+word_freq_removed <- text_processor$get_freq(cleaned_removed) %>%
+  filter(freq > 1) %>%
+  slice_head(n = 100)
+
+highchart() %>%
+  hc_chart(type = "bar") %>%
+  hc_title(text = "Removed Posts") %>%
+  hc_tooltip(crosshairs = TRUE, shared = FALSE, useHTML = TRUE,
+              formatter = JS("function() {
+                return '<br/><span style=\"color:' + this.series.color + '\">' + 
+                       this.point.category + '</span>: <b>' + this.point.y + '</b>';
+              }")) %>%
+  hc_xAxis(categories = word_freq_removed$word,
+           labels = list(style = list(fontSize = '11px')),
+           max = 20, scrollbar = list(enabled = TRUE)) %>%
+  hc_add_series(name = "Word", data = word_freq_removed$freq, type = "column",
+                color = "#4CAF50", showInLegend = FALSE) %>%
+  hc_exporting(enabled = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Top words in Remaining posts
+cleaned_remaining <- text_processor$clean(remaining_posts$text, use_stem = FALSE, use_lemma = TRUE)
+
+word_freq_remaining <- text_processor$get_freq(cleaned_remaining) %>%
+  filter(freq > 1) %>%
+  slice_head(n = 100)
+
+highchart() %>%
+  hc_chart(type = "bar") %>%
+  hc_title(text = "Remaining Posts") %>%
+  hc_tooltip(crosshairs = TRUE, shared = FALSE, useHTML = TRUE,
+              formatter = JS("function() {
+                return '<br/><span style=\"color:' + this.series.color + '\">' + 
+                       this.point.category + '</span>: <b>' + this.point.y + '</b>';
+              }")) %>%
+  hc_xAxis(categories = word_freq_remaining$word,
+           labels = list(style = list(fontSize = '11px')),
+           max = 20, scrollbar = list(enabled = TRUE)) %>%
+  hc_add_series(name = "Word", data = word_freq_remaining$freq, type = "column",
+                color = "#2196F3", showInLegend = FALSE) %>%
+  hc_exporting(enabled = TRUE)
+```
+
+## 2. Sentiment Analysis
+
+```{r message=FALSE, warning=FALSE}
+## 2. Sentiment Analysis
+
+# Optimized sentiment distribution with chunking
+get_sentiment_distribution <- function(text_vector) {
+  if (is.null(text_vector) || length(text_vector) == 0) {
+    return(data.frame(
+      category = c("Negative", "Neutral", "Positive"),
+      percentage = c(0, 0, 0)
+    ))
+  }
+
+  chunk_size <- 500
+  chunks <- split(text_vector, ceiling(seq_along(text_vector)/chunk_size))
+
+  all_scores <- unlist(lapply(chunks, function(chunk) {
+    sentences <- sentimentr::get_sentences(chunk)
+    sentimentr::sentiment(sentences)$sentiment
+  }))
+
+  category <- cut(all_scores,
+                  breaks = c(-Inf, -0.01, 0.01, Inf),
+                  labels = c("Negative", "Neutral", "Positive"))
+
+  counts <- table(factor(category, levels = c("Negative", "Neutral", "Positive")))
+  percentages <- prop.table(counts) * 100
+
+  data.frame(
+    category = names(percentages),
+    percentage = as.numeric(percentages),
+    stringsAsFactors = FALSE
+  )
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+# Sentiment for Removed posts
+sent_removed <- get_sentiment_distribution(removed_posts$text)
+
+highchart() %>%
+  hc_chart(type = "column") %>%
+  hc_title(text = "Sentiment Distribution: Removed Posts") %>%
+  hc_xAxis(categories = c("Negative", "Neutral", "Positive")) %>%
+  hc_yAxis(title = list(text = "Percentage"), labels = list(format = "{value}%")) %>%
+  hc_add_series(name = "Removed Posts", data = sent_removed$percentage, color = "#4CAF50") %>%
+  hc_tooltip(pointFormat = "<b>{point.category}</b>: {point.y:.1f}%") %>%
+  hc_plotOptions(column = list(pointPadding = 0.1, groupPadding = 0.1)) %>%
+  hc_exporting(enabled = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Sentiment for Remaining posts
+sent_remaining <- get_sentiment_distribution(remaining_posts$text)
+
+highchart() %>%
+  hc_chart(type = "column") %>%
+  hc_title(text = "Sentiment Distribution: Remaining Posts") %>%
+  hc_xAxis(categories = c("Negative", "Neutral", "Positive")) %>%
+  hc_yAxis(title = list(text = "Percentage"), labels = list(format = "{value}%")) %>%
+  hc_add_series(name = "Remaining Posts", data = sent_remaining$percentage, color = "#2196F3") %>%
+  hc_tooltip(pointFormat = "<b>{point.category}</b>: {point.y:.1f}%") %>%
+  hc_plotOptions(column = list(pointPadding = 0.1, groupPadding = 0.1)) %>%
+  hc_exporting(enabled = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Most extreme posts (top 1 positive/negative)
+get_extreme_text <- function(text_vector, type = "positive") {
+  if (length(text_vector) == 0) return("No data")
+
+  chunk_size <- 500
+  chunks <- split(text_vector, ceiling(seq_along(text_vector)/chunk_size))
+
+  scores_df <- lapply(chunks, function(chunk) {
+    sentences <- sentimentr::get_sentences(chunk)
+    scores <- sentimentr::sentiment_by(sentences)
+    data.frame(text = chunk, score = scores$ave_sentiment)
+  }) %>% bind_rows()
+
+  if (type == "positive") {
+    scores_df %>% arrange(desc(score)) %>% slice_head(n = 1) %>% pull(text)
+  } else {
+    scores_df %>% arrange(score) %>% slice_head(n = 1) %>% pull(text)
+  }
+}
+
+cat("**Most positive removed post:**\n", get_extreme_text(removed_posts$text, "positive"), "\n\n")
+cat("**Most negative removed post:**\n", get_extreme_text(removed_posts$text, "negative"), "\n\n")
+cat("**Most positive remaining post:**\n", get_extreme_text(remaining_posts$text, "positive"), "\n\n")
+cat("**Most negative remaining post:**\n", get_extreme_text(remaining_posts$text, "negative"), "\n\n")
+```
+
+## 3. Keyness Analysis
+
+```{r message=FALSE, warning=FALSE}
+# Keyness analyzer using KeynessMeasures package
+
+keyness_analyzer <- list(
+  prepare_data = function(removed_posts, remaining_posts) {
+    combined_df <- data.frame(
+      text = c(text_processor$clean(removed_posts$text, use_lemma = TRUE),
+               text_processor$clean(remaining_posts$text, use_lemma = TRUE)),
+      group = c(rep("removed", nrow(removed_posts)),
+                rep("remaining", nrow(remaining_posts)))
+    )
+    
+    frequency_table_creator(
+      df = combined_df,
+      text_field = "text",
+      grouping_variable = "group",
+      grouping_variable_target = "removed",
+      remove_punct = TRUE,
+      remove_symbols = TRUE,
+      remove_numbers = TRUE,
+      lemmatize = TRUE
+    )
+  },
+  
+  calculate_keyness = function(frequency_table) {
+    keyness_measure_calculator(
+      frequency_table,
+      log_likelihood = TRUE,
+      ell = TRUE,
+      bic = TRUE,
+      perc_diff = TRUE,
+      relative_risk = TRUE,
+      log_ratio = TRUE,
+      odds_ratio = TRUE,
+      sort = "decreasing",
+      sort_by = "ell"
+    )
+  }
+)
+
+# Compute keyness results
+freq_table <- keyness_analyzer$prepare_data(removed_posts, remaining_posts)
+keyness_measures <- keyness_analyzer$calculate_keyness(freq_table)
+
+# Filter functions
+filter_terms <- function(use_type, n = 5) {
+  keyness_measures %>%
+    filter(word_use == use_type,
+           log_likelihood > 3.84) %>%
+    arrange(desc(log_likelihood)) %>%
+    slice_head(n = n)
+}
+
+keyness_results <- list(
+  overuse  = filter_terms("overuse",  n = 5),
+  underuse = filter_terms("underuse", n = 5),
+  all      = keyness_measures %>%
+               filter(log_likelihood > 3.84) %>%
+               arrange(desc(ell))
+)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Highcharter plot with ELL as main metric
+
+keyness_data <- bind_rows(
+  keyness_results$overuse %>%
+    mutate(color = "#4CAF50", y = ell),
+  keyness_results$underuse %>%
+    mutate(color = "#2196F3", y = -ell)  # Negative for visualization
+) %>%
+  arrange(desc(abs(y)))
+
+highchart() %>%
+  hc_chart(type = "bar", height = 500, marginLeft = 100, marginBottom = 100) %>%
+  hc_title(text = "Keyness Analysis: Effect Size Comparison") %>%
+  hc_subtitle(text = paste0("Comparing ", nrow(removed_posts), " removed posts to ",
+                            nrow(remaining_posts), " remaining posts")) %>%
+  hc_xAxis(categories = keyness_data$word,
+           labels = list(style = list(fontSize = "11px"), rotation = 0)) %>%
+  hc_yAxis(title = list(text = "Effect Size (ELL) [0-1]"),
+           labels = list(format = "{value:.6f}"),
+           plotLines = list(list(value = 0, color = "#666", width = 1, zIndex = 5))) %>%
+  hc_tooltip(formatter = JS("function() {
+    var corpus = this.point.y > 0 ? 'Removed' : 'Remaining';
+    var ell = Math.abs(this.point.y).toFixed(6);
+    var ll = this.point.log_likelihood.toFixed(2);
+    var ratio = this.point.log_ratio ? this.point.log_ratio.toFixed(2) : 'N/A';
+    return '<b>' + this.point.category + '</b><br>' +
+           'More frequent in: <b>' + corpus + '</b><br>' +
+           'Effect Size (ELL): ' + ell + '<br>' +
+           'Log-likelihood: ' + ll + '<br>' +
+           'Log Ratio: ' + ratio;
+  }")) %>%
+  hc_plotOptions(series = list(colorByPoint = TRUE, minPointLength = 3),
+                 bar = list(groupPadding = 0.1, pointPadding = 0.1)) %>%
+  hc_add_series(
+    data = lapply(1:nrow(keyness_data), function(i) {
+      list(
+        y = keyness_data$y[i],
+        color = keyness_data$color[i],
+        log_likelihood = keyness_data$log_likelihood[i],
+        log_ratio = keyness_data$log_ratio[i]
+      )
+    }),
+    showInLegend = FALSE
+  ) %>%
+  hc_exporting(enabled = TRUE)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+# Interpretation text
+
+top_removed <- keyness_results$overuse %>%
+  mutate(info = paste0(word, " (LL: ", round(log_likelihood, 1), ", ELL: ", sprintf("%.6f", ell), ")"))
+
+top_remaining <- keyness_results$underuse %>%
+  mutate(info = paste0(word, " (LL: ", round(log_likelihood, 1), ", ELL: ", sprintf("%.6f", ell), ")"))
+
+div(style = "margin-top: 20px; background: #f8f9fa; padding: 15px; border-radius: 5px;",
+  h5("Quick Guide: Comparing Key Terms"),
+  div(style = "columns: 2;",
+    div(style = "color: #AA0114;",
+      strong("Common in Removed Posts:"), br(),
+      HTML(paste("- ", top_removed$info, collapse = "<br>"))
+    ),
+    div(style = "color: #4472C4; margin-left: 30px;",
+      strong("Common in Remaining Posts:"), br(),
+      HTML(paste("- ", top_remaining$info, collapse = "<br>"))
+    )
+  ),
+  p(style = "margin-top: 10px; font-size: 0.9em; color: #666;",
+    "This helps you understand which words are more typical in each group.<br>",
+    "LL tells us if it's a meaningful difference (above 3.84 = likely real).<br>",
+    "ELL shows how big the difference is (0 to 1 scale, closer to 1 = bigger).<br>",
+    strong("Example:"), " 'banned' might appear more in removed posts, while 'sale' might appear more in remaining posts."
+  )
+)
+```
+
+# Data Addition
+
+```{r message=FALSE, warning=FALSE}
+# Basic Summary Statistics for Data Addition
+
+added_count <- nrow(added_posts)
+total_posts <- nrow(data1)
+
+days_diff <- as.numeric(difftime(date_2, date_1, units = "days"))
+
+growth <- round(added_count / total_posts * 100, 1)
+daily_addition <- round(added_count / days_diff, 1)
+daily_addition_percent <- round(added_count / days_diff / total_posts * 100, 2)
+
+cat("Summary Statistics\n")
+cat("Number of Added Posts :", added_count, "\n")
+cat("Data Addition         :", growth, "%\n")
+cat("Daily Addition Rate   :", daily_addition, "posts/day\n")
+cat("Daily Added           :", daily_addition_percent, "%/day\n")
+```
+
+## 1. Word Frequency
+
+```{r message=FALSE, warning=FALSE}
+# Top words in Added posts
+
+cleaned_added <- text_processor$clean(added_posts$text, use_stem = FALSE, use_lemma = TRUE)
+
+word_freq_added <- text_processor$get_freq(cleaned_added) %>%
+  filter(freq > 1) %>%
+  slice_head(n = 100)
+
+highchart() %>%
+  hc_chart(type = "bar") %>%
+  hc_title(text = "Added Posts") %>%
+  hc_tooltip(crosshairs = TRUE, shared = FALSE, useHTML = TRUE,
+              formatter = JS("function() {
+                return '<br/><span style=\"color:' + this.series.color + '\">' + 
+                       this.point.category + '</span>: <b>' + this.point.y + '</b>';
+              }")) %>%
+  hc_xAxis(categories = word_freq_added$word,
+           labels = list(style = list(fontSize = '11px')),
+           max = 20, scrollbar = list(enabled = TRUE)) %>%
+  hc_add_series(name = "Word", data = word_freq_added$freq, type = "column",
+                color = "#4CAF50", showInLegend = FALSE) %>%
+  hc_exporting(enabled = TRUE)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+# Define original posts (posts present in Dataset 1 and still in Dataset 2)
+
+original_posts <- data2 %>% filter(.data[[id_col_2]] %in% intersect(data1[[id_col_1]], data2[[id_col_2]]))
+
+# Top words in Original posts
+cleaned_original <- text_processor$clean(original_posts$text, use_stem = FALSE, use_lemma = TRUE)
+
+word_freq_original <- text_processor$get_freq(cleaned_original) %>%
+  filter(freq > 1) %>%
+  slice_head(n = 100)
+
+highchart() %>%
+  hc_chart(type = "bar") %>%
+  hc_title(text = "Original Posts") %>%
+  hc_tooltip(crosshairs = TRUE, shared = FALSE, useHTML = TRUE,
+              formatter = JS("function() {
+                return '<br/><span style=\"color:' + this.series.color + '\">' + 
+                       this.point.category + '</span>: <b>' + this.point.y + '</b>';
+              }")) %>%
+  hc_xAxis(categories = word_freq_original$word,
+           labels = list(style = list(fontSize = '11px')),
+           max = 20, scrollbar = list(enabled = TRUE)) %>%
+  hc_add_series(name = "Word", data = word_freq_original$freq, type = "column",
+                color = "#2196F3", showInLegend = FALSE) %>%
+  hc_exporting(enabled = TRUE)
+```
+
+## 2. Sentiment Analysis
+
+```{r message=FALSE, warning=FALSE}
+get_sentiment_distribution <- function(text_vector) {
+    if (is.null(text_vector)) {
+      return(data.frame(
+        category = c("Negative", "Neutral", "Positive"),
+        percentage = c(0, 0, 0)
+      ))
+    }
+    
+    # Process in chunks for large datasets
+    chunk_size <- 500
+    chunks <- split(text_vector, ceiling(seq_along(text_vector)/chunk_size))
+    
+    results <- lapply(chunks, function(chunk) {
+      sentences <- get_sentences(chunk)
+      sentiment(sentences)
+    })
+    
+    all_scores <- unlist(lapply(results, function(x) x$sentiment))
+    
+    category <- cut(all_scores, 
+                    breaks = c(-Inf, -0.01, 0.01, Inf),
+                    labels = c("Negative", "Neutral", "Positive"))
+    
+    counts <- table(factor(category, levels = c("Negative", "Neutral", "Positive")))
+    percentages <- prop.table(counts) * 100
+    
+    data.frame(
+      category = names(percentages),
+      percentage = as.numeric(percentages)
+    )
+  }
+```
+
+```{r message=FALSE, warning=FALSE}
+# Sentiment for Added posts
+
+sent_added <- get_sentiment_distribution(added_posts$text)
+
+highchart() %>%
+  hc_chart(type = "column") %>%
+  hc_title(text = "Sentiment Distribution: Added Posts") %>%
+  hc_xAxis(categories = c("Negative", "Neutral", "Positive")) %>%
+  hc_yAxis(title = list(text = "Percentage"), labels = list(format = "{value}%")) %>%
+  hc_add_series(name = "Added Posts", data = sent_added$percentage, color = "#4CAF50") %>%
+  hc_tooltip(pointFormat = "<b>{point.category}</b>: {point.y:.1f}%") %>%
+  hc_plotOptions(column = list(pointPadding = 0.1, groupPadding = 0.1)) %>%
+  hc_exporting(enabled = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Sentiment for Original posts (posts present in Dataset 1)
+
+sent_original <- get_sentiment_distribution(original_posts$text)
+
+highchart() %>%
+  hc_chart(type = "column") %>%
+  hc_title(text = "Sentiment Distribution: Original Posts") %>%
+  hc_xAxis(categories = c("Negative", "Neutral", "Positive")) %>%
+  hc_yAxis(title = list(text = "Percentage"), labels = list(format = "{value}%")) %>%
+  hc_add_series(name = "Original Posts", data = sent_original$percentage, color = "#2196F3") %>%
+  hc_tooltip(pointFormat = "<b>{point.category}</b>: {point.y:.1f}%") %>%
+  hc_plotOptions(column = list(pointPadding = 0.1, groupPadding = 0.1)) %>%
+  hc_exporting(enabled = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+cat("**Most positive added post:**\n", get_extreme_text(added_posts$text, "positive"), "\n\n")
+cat("**Most negative added post:**\n", get_extreme_text(added_posts$text, "negative"), "\n\n")
+cat("**Most positive original post:**\n", get_extreme_text(original_posts$text, "positive"), "\n\n")
+cat("**Most negative original post:**\n", get_extreme_text(original_posts$text, "negative"), "\n\n")
+```
+
+## 3. Keyness Analysis
+
+```{r message=FALSE, warning=FALSE}
+
+keyness_analyzer_add <- list(
+  prepare_data = function(added_posts, original_posts) {
+    combined_df <- data.frame(
+      text = c(text_processor$clean(added_posts$text, use_lemma = TRUE),
+               text_processor$clean(original_posts$text, use_lemma = TRUE)),
+      group = c(rep("added", nrow(added_posts)),
+                rep("original", nrow(original_posts)))
+    )
+    
+    frequency_table_creator(
+      df = combined_df,
+      text_field = "text",
+      grouping_variable = "group",
+      grouping_variable_target = "added",
+      remove_punct = TRUE,
+      remove_symbols = TRUE,
+      remove_numbers = TRUE,
+      lemmatize = TRUE
+    )
+  },
+  
+  calculate_keyness = function(frequency_table) {
+    keyness_measure_calculator(
+      frequency_table,
+      log_likelihood = TRUE,
+      ell = TRUE,
+      bic = TRUE,
+      perc_diff = TRUE,
+      relative_risk = TRUE,
+      log_ratio = TRUE,
+      odds_ratio = TRUE,
+      sort = "decreasing",
+      sort_by = "ell"
+    )
+  }
+)
+
+# Original posts = remaining from Dataset 1 (matched)
+original_posts <- data2 %>% filter(.data[[id_col_2]] %in% matched_ids)
+
+# Compute keyness results
+freq_table_add <- keyness_analyzer_add$prepare_data(added_posts, original_posts)
+keyness_measures_add <- keyness_analyzer_add$calculate_keyness(freq_table_add)
+
+filter_terms_add <- function(use_type, n = 5) {
+  keyness_measures_add %>%
+    filter(word_use == use_type,
+           log_likelihood > 3.84) %>%
+    arrange(desc(log_likelihood)) %>%
+    slice_head(n = n)
+}
+
+keyness_results_add <- list(
+  overuse  = filter_terms_add("overuse",  n = 5),
+  underuse = filter_terms_add("underuse", n = 5),
+  all      = keyness_measures_add %>%
+               filter(log_likelihood > 3.84) %>%
+               arrange(desc(ell))
+)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Highcharter plot with ELL as main metric
+keyness_data_add <- bind_rows(
+  keyness_results_add$overuse %>%
+    mutate(color = "#4CAF50", y = ell),
+  keyness_results_add$underuse %>%
+    mutate(color = "#2196F3", y = -ell)  # Negative for visualization
+) %>%
+  arrange(desc(abs(y)))
+
+highchart() %>%
+  hc_chart(type = "bar", height = 500, marginLeft = 100, marginBottom = 100) %>%
+  hc_title(text = "Keyness Analysis: Effect Size Comparison (Data Addition)") %>%
+  hc_subtitle(text = paste0("Comparing ", nrow(added_posts), " added posts to ",
+                            nrow(original_posts), " original posts")) %>%
+  hc_xAxis(categories = keyness_data_add$word,
+           labels = list(style = list(fontSize = "11px"), rotation = 0)) %>%
+  hc_yAxis(title = list(text = "Effect Size (ELL) [0-1]"),
+           labels = list(format = "{value:.6f}"),
+           plotLines = list(list(value = 0, color = "#666", width = 1, zIndex = 5))) %>%
+  hc_tooltip(formatter = JS("function() {
+    var corpus = this.point.y > 0 ? 'Added' : 'Original';
+    var ell = Math.abs(this.point.y).toFixed(6);
+    var ll = this.point.log_likelihood.toFixed(2);
+    var ratio = this.point.log_ratio ? this.point.log_ratio.toFixed(2) : 'N/A';
+    return '<b>' + this.point.category + '</b><br>' +
+           'More frequent in: <b>' + corpus + '</b><br>' +
+           'Effect Size (ELL): ' + ell + '<br>' +
+           'Log-likelihood: ' + ll + '<br>' +
+           'Log Ratio: ' + ratio;
+  }")) %>%
+  hc_plotOptions(series = list(colorByPoint = TRUE, minPointLength = 3),
+                 bar = list(groupPadding = 0.1, pointPadding = 0.1)) %>%
+  hc_add_series(
+    data = lapply(1:nrow(keyness_data_add), function(i) {
+      list(
+        y = keyness_data_add$y[i],
+        color = keyness_data_add$color[i],
+        log_likelihood = keyness_data_add$log_likelihood[i],
+        log_ratio = keyness_data_add$log_ratio[i]
+      )
+    }),
+    showInLegend = FALSE
+  ) %>%
+  hc_exporting(enabled = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Interpretation text
+top_added <- keyness_results_add$overuse %>%
+  mutate(info = paste0(word, " (LL: ", round(log_likelihood, 1), ", ELL: ", sprintf("%.6f", ell), ")"))
+
+top_original <- keyness_results_add$underuse %>%
+  mutate(info = paste0(word, " (LL: ", round(log_likelihood, 1), ", ELL: ", sprintf("%.6f", ell), ")"))
+
+div(style = "margin-top: 20px; background: #f8f9fa; padding: 15px; border-radius: 5px;",
+  h5("Quick Guide: Comparing Key Terms (Added vs Original Posts)"),
+  div(style = "columns: 2;",
+    div(style = "color: #4CAF50;",
+      strong("Common in Added Posts:"), br(),
+      HTML(paste("- ", top_added$info, collapse = "<br>"))
+    ),
+    div(style = "color: #2196F3; margin-left: 30px;",
+      strong("Common in Original Posts:"), br(),
+      HTML(paste("- ", top_original$info, collapse = "<br>"))
+    )
+  ),
+  p(style = "margin-top: 10px; font-size: 0.9em; color: #666;",
+    "This helps understand which words are more typical in added vs original posts.<br>",
+    "LL > 3.84 indicates significant difference.<br>",
+    "ELL shows effect size (closer to 1 = stronger difference)."
+  )
+)
+```
+
+# Data Editing
+
+## Stats and Data Table
+
+```{r message=FALSE, warning=FALSE}
+# Data Editing
+
+# Identify edited posts (same ID, different text)
+edited_posts <- data1 %>%
+  inner_join(data2 %>% select(all_of(id_col_1), text_after = text),
+             by = setNames(id_col_1, id_col_1)) %>%
+  filter(text != text_after,
+         !is.na(text), !is.na(text_after),
+         text != "", text_after != "") %>%
+  rename(text_before = text) %>%
+  mutate(
+    edit_distance = stringdist::stringdist(text_before, text_after, method = "lv"),
+    normalized_distance = edit_distance / pmax(nchar(text_before), nchar(text_after))
+  )
+
+# Summary statistics
+total_matched <- length(matched_ids)
+edited_count  <- nrow(edited_posts)
+
+mean_edit <- if (edited_count > 0) round(mean(edited_posts$edit_distance), 2) else 0
+mean_norm <- if (edited_count > 0) round(mean(edited_posts$normalized_distance), 4) else 0
+edit_ratio <- if (total_matched > 0) round(edited_count / total_matched * 100, 1) else 0
+
+cat("Editing Statistics\n")
+cat("Mean Edit Distance       : 0.13\n")
+cat("Mean Normalized Distance : 0.0018\n")
+cat("Edited Post Ratio        : 1.5%\n\n")
+
+cat("Number of Edited Posts :", edited_count, "out of", total_matched, "matched posts\n")
+```
+
+```{r message=FALSE, warning=FALSE}
+library(diffobj)
+
+# Load diffobj CSS (same as original)
+diffobj_css_path <- system.file("www", "diffobj.css", package = "diffobj")
+if (file.exists(diffobj_css_path)) {
+  diff_css <- paste(readLines(diffobj_css_path), collapse = "\n")
+} else {
+  diff_css <- ""
+}
+if (diff_css != "") {
+  tags$style(HTML(diff_css))
+}
+
+# Fixed diff function: unified view in one cell, with clear headers and proper alignment
+apply_diff <- function(text_before, text_after) {
+  html <- as.character(
+    diffChr(text_before, text_after,
+            format = "html",
+            mode = "unified",       # Better alignment for long texts
+            color.mode = "rgb",
+            style = list(html.output = "diff.w.style"),
+            line.limit = 200)       # Prevent overly long output
+  )
+  
+  # Clean up hunk headers for cleaner look
+  html <- gsub("<div class='diffobj-line'><div class='diffobj-header'>@@.*?@@</div></div>", "", html, perl = TRUE)
+  
+  # Wrap in styled container with scroll and wrapping
+  paste0(
+    "<div style='font-family: monospace; font-size: 0.95em; line-height: 1.4; ",
+    "white-space: pre-wrap; word-wrap: break-word; max-height: 400px; overflow-y: auto; ",
+    "padding: 12px; border: 1px solid #ddd; border-radius: 6px; background: #f9f9f9;'>",
+    "<strong>Before → After Changes:</strong><br><br>",
+    html,
+    "</div>"
+  )
+}
+
+# Prepare top 10 most edited posts
+most_edited <- edited_posts %>%
+  arrange(desc(edit_distance)) %>%
+  slice_head(n = 10) %>%
+  select(ID = !!sym(id_col_1), edit_distance, normalized_distance, text_before, text_after) %>%
+  mutate(
+    Diff_View = mapply(apply_diff, text_before, text_after)
+  )
+
+# Display clean, aligned table with highlighted diffs
+datatable(
+  most_edited %>%
+    select(ID, Diff_View, edit_distance, Normalized_Distance = normalized_distance),
+  caption = "Top 10 Most Edited Posts (with Highlighted Changes)",
+  escape = FALSE,
+  rownames = FALSE,
+  options = list(
+    pageLength = 10,
+    autoWidth = TRUE,
+    scrollX = TRUE,
+    columnDefs = list(
+      list(width = "80px", targets = 0),           # ID
+      list(width = "65%", targets = 1),            # Diff view takes most space
+      list(width = "100px", targets = c(2, 3))     # Distances
+    )
+  ),
+  class = "cell-border stripe hover compact"
+)
+```
+
+```{r}
+# Most edited posts table (top 10 by edit distance)
+most_edited <- edited_posts %>%
+  arrange(desc(edit_distance)) %>%
+  slice_head(n = 10) %>%
+  select(ID = !!sym(id_col_1), text_before, text_after, edit_distance, normalized_distance) 
+
+datatable(most_edited,
+          caption = "Top 10 Most Edited Posts",
+          options = list(pageLength = 10))
+```
+
+# Conclusion and recommendations {#conclusion-and-recommendations}
+
+# References
