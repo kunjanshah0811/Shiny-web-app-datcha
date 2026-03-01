@@ -2,7 +2,7 @@
 
 ![R](https://img.shields.io/badge/R-276DC3?style=for-the-badge&logo=r&logoColor=white)
 ![Shiny](https://img.shields.io/badge/Shiny-blue?style=for-the-badge&logo=rstudio&logoColor=white)
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-Datcha-blue?style=for-the-badge&logo=shinyapps)](https://kunjan.shinyapps.io/Datcha_working/)
+[![Demo](https://img.shields.io/badge/Demo-blue?style=for-the-badge)](https://kunjan.shinyapps.io/Datcha_working/)
 
 A **Shiny web app** for comparing two social media datasets collected at different points in time - detecting deletions, additions, and edits with rich visualizations.
 
