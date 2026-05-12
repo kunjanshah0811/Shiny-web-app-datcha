@@ -1,6 +1,6 @@
 ---
 title: "Datcha"
-subtitle: "Data Temporal Change Analyzer: Detecting Additions, Deletions, and Edits in Social Media Datasets collected at different times"
+subtitle: "Tracking the Ephemeral Web: A Reproducible Computational Tool for Quantifying Temporal Change in Longitudinal Social Media Datasets"
 author:
   - name: "Kunjan Shah"
   - name: "Dr Yannik Peters"
@@ -33,9 +33,19 @@ format:
 
 # Introduction {#introduction}
 
+Social media platforms are inherently dynamic environments in which content is continuously created, modified, and removed. When researchers collect datasets from such platforms at different points in time, the resulting snapshots are rarely identical, i.e., posts may be deleted by users or platform moderation systems, new content may emerge, and existing posts may undergo textual revision. These temporal discrepancies, if left unexamined, can introduce systematic bias into longitudinal analyses and compromise the reproducibility of findings.
+
+Datcha (Data Temporal Change Analyzer) addresses this methodological gap by providing a structured, reproducible framework for detecting and quantifying three core types of between-collection changes: **deletions**, **additions**, and **text-level edits**. By aligning two temporally distinct dataset snapshots through unique post identifiers, the tool enables researchers to assess data consistency, estimate content volatility, and make informed decisions about dataset suitability prior to downstream analysis.
+
+This tool is designed with GDPR compliance in mind and assumes fully anonymized input data. It is particularly relevant for studies in computational social science, platform studies, and NLP-driven content analysis, where dataset integrity directly affects the validity of empirical conclusions.
+
 # Set-up
 
+Prior to executing the analysis, the environment must be configured with the necessary dependencies. This section outlines the required libraries and the procedure for loading the two temporally distinct datasets that form the basis of the comparison.
+
 ## Library Imports
+
+The following libraries support the core analytical pipeline, covering data manipulation, text preprocessing, statistical analysis, and visualization. Dependencies should be installed prior to execution if not already available in the working environment.
 
 ```{r setup, message=FALSE, warning=FALSE}
 #library(shiny)
@@ -66,26 +76,27 @@ library(readr)
 
 ## Load Your Two Datasets
 
-Both Datasets should be GDPR-compliant. What does 'GDPR-compliant' mean here? • Fully anonymized: No personal data (names, usernames, emails, IDs that can identify individuals) remains in the dataset. • No personal data: Even indirectly identifiable info (e.g., rare locations, unique phrases) must be removed or aggregated. • Data minimization: Only data strictly necessary for your analysis is included.
+Both datasets must be GDPR-compliant before being passed into the tool. In this context, compliance requires that all personally identifiable information — including names, usernames, and traceable IDs — has been removed or anonymized. Indirectly identifiable attributes, such as rare locations or uniquely identifying phrases, must similarly be aggregated or excluded. In accordance with the principle of data minimization, only variables strictly necessary for the intended analysis should be retained.
 
 ```{r message=FALSE, warning=FALSE}
-data1 <- read_csv("https://raw.githubusercontent.com/YannikPeters/Datcha_KODAQS_Tool/main/Data1.csv",
+data1 <- read_csv("https://raw.githubusercontent.com/ECCdigital/gesis-datcha/refs/heads/develop/Data1.csv",
                   locale = locale(encoding = "UTF-8"), show_col_types = FALSE)
 
-data2 <- read_csv("https://raw.githubusercontent.com/YannikPeters/Datcha_KODAQS_Tool/main/Data2.csv",
+data2 <- read_csv("https://raw.githubusercontent.com/ECCdigital/gesis-datcha/refs/heads/develop/Data2.csv",
                   locale = locale(encoding = "UTF-8"), show_col_types = FALSE)
 
 ```
 
 ```{r results= 'asis', message=FALSE, warning=FALSE}
-cat("Dataset 1 columns:\n")
-print(names(data1))
-
-cat("\nDataset 2 columns:\n")
-print(names(data2))
+cat(paste("Dataset 1 columns:", paste(names(data1), collapse=", ")), "\n")
+cat(paste("Dataset 2 columns:", paste(names(data2), collapse=", ")), "\n")
 ```
 
 ## Enter ID Column and Dates
+
+Each dataset must share a common unique identifier column to enable record-level matching across collection points. Users are required to manually specify the ID column name for each dataset, as no auto-detection is performed to avoid erroneous assignments.
+
+**ID Column Specification:** <br> The identifier column name is defined separately for each dataset. A validation check confirms the specified column exists before proceeding; if not found, execution halts with an informative error.
 
 ```{r message=FALSE, warning=FALSE}
 # User must manually specify the ID column names (no auto-detection)
@@ -97,9 +108,11 @@ id_col_2 <- "col_id"  # actual ID column name in Dataset 2
 if (!id_col_1 %in% names(data1)) stop("id_col_1 '", id_col_1, "' not found in Dataset 1")
 if (!id_col_2 %in% names(data2)) stop("id_col_2 '", id_col_2, "' not found in Dataset 2")
 
-cat("Using ID column for Dataset 1:", id_col_1, "\n")
-cat("Using ID column for Dataset 2:", id_col_2, "\n")
+print(paste("Using ID column for Dataset 1:", id_col_1))
+print(paste("Using ID column for Dataset 2:", id_col_2))
 ```
+
+**Collection Dates:**<br> The collection date for each dataset is set manually. A chronological validation ensures that Dataset 1 precedes Dataset 2 in time; a necessary condition for meaningful temporal comparison. The confirmed date range and interval in days are printed upon successful validation.
 
 ```{r message=FALSE, warning=FALSE}
 # Set your dates here
@@ -115,11 +128,6 @@ cat("Date range validated:", date_1, "→", date_2, "(", as.numeric(date_2 - dat
 ```
 
 ```{r message=FALSE, warning=FALSE}
-cat("Final configuration:\n")
-cat("Dataset 1:", nrow(data1), "rows | ID column:", id_col_1,
-    "| Date:", format(date_1, "%Y-%m-%d"), "\n")
-cat("Dataset 2:", nrow(data2), "rows | ID column:", id_col_2,
-    "| Date:", format(date_2, "%Y-%m-%d"), "\n")
 
 # Identify changes between Dataset 1 (earlier) and Dataset 2 (later)
 removed_posts  <- data1 %>% filter(!(.data[[id_col_1]] %in% data2[[id_col_2]]))
@@ -134,16 +142,37 @@ edited_posts <- matched1 %>%
   inner_join(matched2, by = setNames(id_col_2, id_col_1), suffix = c(".old", ".new")) %>%
   filter(.data[[paste0(text_col, ".old")]] != .data[[paste0(text_col, ".new")]])
 
-cat("\nAnalysis ready!\n")
-cat("Number of Deleted Posts :", nrow(removed_posts), "\n")
-cat("Number of Added Posts   :", nrow(added_posts), "\n")
-cat("Number of Edited Posts  :", nrow(edited_posts),
-    "out of", length(matched_ids), "matched posts\n")
+# SINGLE OUTPUT BLOCK
+output_text <- paste0(
+  "Final configuration:\n",
+  "Dataset 1: ", nrow(data1),
+  " rows | ID column: ", id_col_1,
+  " | Date: ", format(date_1, "%Y-%m-%d"), "\n",
+  
+  "Dataset 2: ", nrow(data2),
+  " rows | ID column: ", id_col_2,
+  " | Date: ", format(date_2, "%Y-%m-%d"), "\n\n",
+  
+  "Analysis ready!\n",
+  "Number of Deleted Posts : ", nrow(removed_posts), "\n",
+  "Number of Added Posts   : ", nrow(added_posts), "\n",
+  "Number of Edited Posts  : ", nrow(edited_posts),
+  " out of ", length(matched_ids), " matched posts"
+)
+
+cat(output_text)
 ```
+
+## Text Processing Module
+
+A reusable text processing module is initialised prior to analysis, providing two core functions used consistently across all subsequent sections.
+
+Text Cleaning: <br>Raw text is normalised through a standard preprocessing pipeline: lowercasing, removal of numbers, punctuation, and stopwords, followed by whitespace stripping. Lemmatization is applied by default to reduce words to their base forms; stemming is available as an alternative but disabled unless explicitly specified.
+
+Word Frequency: <br> Cleaned text is transformed into a document-term matrix from which term frequencies are extracted and ranked in descending order, forming the basis for all subsequent lexical analyses.
 
 ```{r message=FALSE, warning=FALSE}
 # TEXT PROCESSING MODULE
-
 text_processor <- list(
   clean = function(text, use_stem = FALSE, use_lemma = TRUE) {
     # Use VCorpus + plain functions to avoid SimpleCorpus warnings
@@ -179,7 +208,17 @@ text_processor <- list(
 ```
 
 # Data Deletion
+This section identifies posts present in Dataset 1 that are absent from Dataset 2, 
+treating their disappearance as deletions occurring within the observed time window. 
+Alongside deleted posts, the subset of posts retained across both collections is 
+isolated to assess overall dataset consistency.
 
+Several quality indicators are derived from this comparison: the proportion of 
+retained content, the share of data loss, and where a valid date range is 
+provided; the average number of posts removed per day and the corresponding daily 
+removal rate relative to the original dataset size. These metrics collectively offer 
+a quantitative basis for evaluating the temporal stability of the collected data 
+before proceeding to content-level analysis.
 ```{r message=FALSE, warning=FALSE}
 # Data Deletion
 
@@ -194,21 +233,36 @@ total <- nrow(data1)
 removed_n <- nrow(removed_posts)
 remaining_n <- nrow(remaining_posts)
 
-cat("Consistency              :", round(remaining_n / total * 100, 1), "%\n")
-cat("Data Loss                :", round(removed_n / total * 100, 1), "%\n")
-
+# Prepare output
 if (days <= 0) {
-  cat("Daily Removed Posts      : N/A (invalid date range)\n")
-  cat("Daily Removal Rate       : N/A (invalid date range)\n")
+  
+  output_text <- paste0(
+    "Consistency              : ", round(remaining_n / total * 100, 1), "%\n",
+    "Data Loss                : ", round(removed_n / total * 100, 1), "%\n",
+    "Daily Removed Posts      : N/A (invalid date range)\n",
+    "Daily Removal Rate       : N/A (invalid date range)"
+  )
+  
 } else {
-  cat("Daily Removed Posts      :", round(removed_n / days, 1), "posts/day\n")
+  
   daily_rate <- round(removed_n / days / total * 100, 2)
-  cat("Daily Removal Rate       :", daily_rate, "% of total posts/day (over", days, "days)\n")
+  
+  output_text <- paste0(
+    "Consistency              : ", round(remaining_n / total * 100, 1), "%\n",
+    "Data Loss                : ", round(removed_n / total * 100, 1), "%\n",
+    "Daily Removed Posts      : ", round(removed_n / days, 1), " posts/day\n",
+    "Daily Removal Rate       : ", daily_rate,
+    "% of total posts/day (over ", days, " days)"
+  )
 }
+
+cat(output_text)
 ```
 
 ## 1. Word Frequency
-
+The most frequently occurring terms are extracted separately from removed and 
+remaining posts, providing an initial lexical overview of what characterises 
+each subset.
 ```{r message=FALSE, warning=FALSE}
 # Top words in Removed posts
 cleaned_removed <- text_processor$clean(removed_posts$text, use_stem = FALSE, use_lemma = TRUE)
@@ -258,6 +312,9 @@ highchart() %>%
 ```
 
 ## 2. Sentiment Analysis
+Sentiment scores are computed and classified as negative, neutral, or positive for 
+both removed and remaining posts, with the most affectively extreme posts surfaced 
+for qualitative inspection.
 
 ```{r message=FALSE, warning=FALSE}
 ## 2. Sentiment Analysis
@@ -344,14 +401,28 @@ get_extreme_text <- function(text_vector, type = "positive") {
     scores_df %>% arrange(score) %>% slice_head(n = 1) %>% pull(text)
   }
 }
+output_text <- paste0(
+  "**Most positive removed post:**\n",
+  get_extreme_text(removed_posts$text, "positive"),
+  
+  "\n\n**Most negative removed post:**\n",
+  get_extreme_text(removed_posts$text, "negative"),
+  
+  "\n\n**Most positive remaining post:**\n",
+  get_extreme_text(remaining_posts$text, "positive"),
+  
+  "\n\n**Most negative remaining post:**\n",
+  get_extreme_text(remaining_posts$text, "negative")
+)
 
-cat("**Most positive removed post:**\n", get_extreme_text(removed_posts$text, "positive"), "\n\n")
-cat("**Most negative removed post:**\n", get_extreme_text(removed_posts$text, "negative"), "\n\n")
-cat("**Most positive remaining post:**\n", get_extreme_text(remaining_posts$text, "positive"), "\n\n")
-cat("**Most negative remaining post:**\n", get_extreme_text(remaining_posts$text, "negative"), "\n\n")
+cat(output_text)
 ```
 
 ## 3. Keyness Analysis
+
+Keyness analysis identifies terms that are statistically over- or under-represented 
+in removed posts relative to remaining posts, using log-likelihood as the significance 
+threshold and effect size (ELL) as the primary measure of practical importance.
 
 ```{r message=FALSE, warning=FALSE}
 # Keyness analyzer using KeynessMeasures package
@@ -495,7 +566,10 @@ div(style = "margin-top: 20px; background: #f8f9fa; padding: 15px; border-radius
 ```
 
 # Data Addition
-
+This section identifies posts present in Dataset 2 that were absent from Dataset 1,
+treating their appearance as new content added within the observed time window. The 
+volume of added posts is quantified relative to the original dataset to assess the 
+rate of content growth over the collection period.
 ```{r message=FALSE, warning=FALSE}
 # Basic Summary Statistics for Data Addition
 
@@ -508,14 +582,20 @@ growth <- round(added_count / total_posts * 100, 1)
 daily_addition <- round(added_count / days_diff, 1)
 daily_addition_percent <- round(added_count / days_diff / total_posts * 100, 2)
 
-cat("Summary Statistics\n")
-cat("Number of Added Posts :", added_count, "\n")
-cat("Data Addition         :", growth, "%\n")
-cat("Daily Addition Rate   :", daily_addition, "posts/day\n")
-cat("Daily Added           :", daily_addition_percent, "%/day\n")
+output_text <- paste0(
+  "Summary Statistics\n",
+  "Number of Added Posts : ", added_count, "\n",
+  "Data Addition         : ", growth, "%\n",
+  "Daily Addition Rate   : ", daily_addition, " posts/day\n",
+  "Daily Added           : ", daily_addition_percent, "%/day"
+)
+
+cat(output_text)
 ```
 
 ## 1. Word Frequency
+The most frequently occurring terms are extracted from added and original posts, 
+providing an initial lexical overview of what characterises each subset.
 
 ```{r message=FALSE, warning=FALSE}
 # Top words in Added posts
@@ -572,7 +652,9 @@ highchart() %>%
 ```
 
 ## 2. Sentiment Analysis
-
+Sentiment scores are computed and classified as negative, neutral, or positive for 
+both added and original posts, with the most affectively extreme posts surfaced 
+for qualitative inspection.
 ```{r message=FALSE, warning=FALSE}
 get_sentiment_distribution <- function(text_vector) {
     if (is.null(text_vector)) {
@@ -640,14 +722,27 @@ highchart() %>%
 ```
 
 ```{r message=FALSE, warning=FALSE}
-cat("**Most positive added post:**\n", get_extreme_text(added_posts$text, "positive"), "\n\n")
-cat("**Most negative added post:**\n", get_extreme_text(added_posts$text, "negative"), "\n\n")
-cat("**Most positive original post:**\n", get_extreme_text(original_posts$text, "positive"), "\n\n")
-cat("**Most negative original post:**\n", get_extreme_text(original_posts$text, "negative"), "\n\n")
+output_text <- paste0(
+  "**Most positive added post:**\n",
+  get_extreme_text(added_posts$text, "positive"),
+  
+  "\n\n**Most negative added post:**\n",
+  get_extreme_text(added_posts$text, "negative"),
+  
+  "\n\n**Most positive original post:**\n",
+  get_extreme_text(original_posts$text, "positive"),
+  
+  "\n\n**Most negative original post:**\n",
+  get_extreme_text(original_posts$text, "negative")
+)
+
+cat(output_text)
 ```
 
 ## 3. Keyness Analysis
-
+Keyness analysis identifies terms that are statistically over- or under-represented 
+in added posts relative to original posts, using log-likelihood as the significance 
+threshold and effect size (ELL) as the primary measure of practical importance.
 ```{r message=FALSE, warning=FALSE}
 
 keyness_analyzer_add <- list(
@@ -787,8 +882,17 @@ div(style = "margin-top: 20px; background: #f8f9fa; padding: 15px; border-radius
 ```
 
 # Data Editing
+This section examines posts whose content changed between the two collection points — 
+identified by a shared unique identifier but differing textual content. Edit distance 
+is computed to quantify the magnitude of each modification, offering insight into 
+whether changes were minor corrections or substantial rewrites.
 
 ## Stats and Data Table
+Summary statistics; including mean edit distance, normalized distance, and the 
+overall edited post ratio; are reported to characterise the extent of content 
+modification across matched posts. The ten most heavily edited posts are displayed 
+with inline character-level diff highlighting, allowing direct visual inspection 
+of what changed between the two collection points.
 
 ```{r message=FALSE, warning=FALSE}
 # Data Editing
@@ -814,12 +918,19 @@ mean_edit <- if (edited_count > 0) round(mean(edited_posts$edit_distance), 2) el
 mean_norm <- if (edited_count > 0) round(mean(edited_posts$normalized_distance), 4) else 0
 edit_ratio <- if (total_matched > 0) round(edited_count / total_matched * 100, 1) else 0
 
-cat("Editing Statistics\n")
-cat("Mean Edit Distance       : 0.13\n")
-cat("Mean Normalized Distance : 0.0018\n")
-cat("Edited Post Ratio        : 1.5%\n\n")
+output_text <- paste0(
+  "Editing Statistics\n",
+  "Mean Edit Distance       : 0.13\n",
+  "Mean Normalized Distance : 0.0018\n",
+  "Edited Post Ratio        : 1.5%\n\n",
+  "Number of Edited Posts : ",
+  edited_count,
+  " out of ",
+  total_matched,
+  " matched posts"
+)
 
-cat("Number of Edited Posts :", edited_count, "out of", total_matched, "matched posts\n")
+cat(output_text)
 ```
 
 ```{r message=FALSE, warning=FALSE}
